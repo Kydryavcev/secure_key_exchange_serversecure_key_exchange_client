@@ -24,6 +24,10 @@ public class ClientApplication extends Application
         stage.getIcons().add(new Image(inIcon));
         stage.setScene(scene);
         stage.show();
+
+        ClientController controller = fxmlLoader.getController();
+
+        stage.setOnCloseRequest(controller.getCloseEventHandler());
     }
 
     public static void main(String[] args)

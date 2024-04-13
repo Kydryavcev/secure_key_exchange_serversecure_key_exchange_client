@@ -1,7 +1,13 @@
 package model;
 
 import javax.crypto.*;
+import java.io.FileInputStream;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.security.*;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 
 /**
  * <h2>Класс криптографических алгоритмов</h2>
@@ -14,15 +20,41 @@ import java.security.*;
  */
 public class CryptographicAlgorithms
 {
-    public static SecretKey generateKey() throws NoSuchAlgorithmException
+    /**
+     * <h2>Генерация секретного ключа для алгоритма AES.</h2>
+     *
+     * @return Секретный ключ или {@code null}, если произошла ошибка (см. файл .log).
+     */
+    public static SecretKey generateKey()
     {
-        SecureRandom sr = new SecureRandom();
+        try
+        {
+            SecureRandom sr = new SecureRandom();
 
-        KeyGenerator generator = KeyGenerator.getInstance("AES");
+            KeyGenerator generator = KeyGenerator.getInstance("AES");
 
-        generator.init(sr);
+            generator.init(sr);
 
-        return generator.generateKey();
+            return generator.generateKey();
+        }
+        catch (NoSuchAlgorithmException ex)
+        {
+            try (FileWriter fw = new FileWriter("src/main/resources/logs/.log"))
+            {
+                fw.write(java.time.LocalDateTime.now().toString());
+                fw.write(CryptographicAlgorithms.class.getName() + "\n");
+                fw.write(new Exception().getStackTrace()[0].getMethodName() + "\n");
+                fw.write(ex.getClass().getName() + "\n");
+                fw.write(ex.getMessage() + "\n");
+            }
+            catch (IOException ex1)
+            {
+                System.out.println("Файла для логирования не существует");
+                System.out.println(ex1.getMessage());
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -30,28 +62,39 @@ public class CryptographicAlgorithms
      *
      * <p>Данный метод сворачивает ключ {@param wrappedKey} с помощью открытого ключа {@code key}</p>
      *
-     * @throws NoSuchAlgorithmException если преобразование имеет значение null, пусто, имеет недопустимый формат или
-     * если ни один поставщик не поддерживает реализацию CipherSpi для указанного алгоритма.
-     * @throws NoSuchPaddingException если преобразование содержит схему заполнения, которая недоступна.
-     * @throws InvalidKeyException если данный ключ не подходит для инициализации этого шифра или требует параметров
-     * алгоритма, которые не могут быть определены из данного ключа, или если данный ключ имеет размер ключа, который
-     * превышает максимально допустимый размер ключа (как определено из настроенных файлов политики юрисдикции).
-     * @throws IllegalBlockSizeException если этот шифр является блочным, заполнение не запрашивалось, а длина кодировки
-     * ключа, подлежащего переносу, не кратна размеру блока
-     *
      * @param secretKey экспортируемый ключ, который будет подвержен свёртке.
      * @param key открытый ключ, с помощью которого будет сворачиваться секретный ключ {@code secretKey}.
      *
-     * @return секретный ключ.
+     * @return Cекретный ключ в виде байтового массива или {@code null}, если произошла ошибка (см. файл .log).
      */
     public static byte[] wrapKey(Key secretKey, PublicKey key)
-            throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException, IllegalBlockSizeException
     {
-        Cipher cipher = Cipher.getInstance("RSA");
+        try
+        {
+            Cipher cipher = Cipher.getInstance("RSA");
 
-        cipher.init(Cipher.WRAP_MODE, key);
+            cipher.init(Cipher.WRAP_MODE, key);
 
-        return cipher.wrap(secretKey);
+            return cipher.wrap(secretKey);
+        }
+        catch (NoSuchAlgorithmException|NoSuchPaddingException|InvalidKeyException|IllegalBlockSizeException ex)
+        {
+            try (FileWriter fw = new FileWriter("src/main/resources/logs/.log"))
+            {
+                fw.write(java.time.LocalDateTime.now().toString());
+                fw.write(CryptographicAlgorithms.class.getName() + "\n");
+                fw.write(new Exception().getStackTrace()[0].getMethodName() + "\n");
+                fw.write(ex.getClass().getName() + "\n");
+                fw.write(ex.getMessage() + "\n");
+            }
+            catch (IOException ex1)
+            {
+                System.out.println("Файла для логирования не существует");
+                System.out.println(ex1.getMessage());
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -64,27 +107,71 @@ public class CryptographicAlgorithms
      * @param length количество байт в массиве, представляющие данные.
      * @param key ключ, с помощью которого будет произведено расшифрование.
      *
-     * @return Массив байтов, представляющий сабой расшифрованные данные.
-     *
-     * @throws NoSuchAlgorithmException если преобразование имеет нулевое значение, пусто, имеет недопустимый формат или,
-     * если ни один провайдер не поддерживает реализацию CipherSpi для указанного алгоритма.
-     * @throws NoSuchPaddingException если преобразование содержит схему заполнения, которая недоступна.
-     * @throws InvalidKeyException если данный ключ не подходит для инициализации этого шифра или, если данный ключ имеет
-     * размер ключа, который превышает максимально допустимый размер ключа.
-     * @throws IllegalBlockSizeException если этот шифр является блочным, заполнение не запрашивалось (только в режиме
-     * шифрования), а общая входная длина данных, обработанных этим шифром, не кратна размеру блока; или если этот
-     * алгоритм шифрования не может обработать предоставленные входные данные.
-     * @throws BadPaddingException если при расшифровании с отсечением дополнительных байтов содержимое дополнительного
-     * байта не соответствует количеству байтов, подлежащих отсечению
+     * @return Массив байтов, представляющий сабой расшифрованные данные или {@code null},
+     * если произошла ошибка (см. файл .log).
      */
     public static byte[] decrypt(byte[] data, int length, Key key)
-            throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException,
-            IllegalBlockSizeException, BadPaddingException
     {
-        Cipher cipher = Cipher.getInstance("AES");
+        try
+        {
+            Cipher cipher = Cipher.getInstance("AES");
 
-        cipher.init(Cipher.DECRYPT_MODE, key);
+            cipher.init(Cipher.DECRYPT_MODE, key);
 
-        return cipher.doFinal(data, 0, length);
+            return cipher.doFinal(data, 0, length);
+        }
+        catch (NoSuchAlgorithmException|NoSuchPaddingException|InvalidKeyException|
+               IllegalBlockSizeException|BadPaddingException ex)
+        {
+            try (FileWriter fw = new FileWriter("src/main/resources/logs/.log"))
+            {
+                fw.write(java.time.LocalDateTime.now().toString());
+                fw.write(CryptographicAlgorithms.class.getName() + "\n");
+                fw.write(new Exception().getStackTrace()[0].getMethodName() + "\n");
+                fw.write(ex.getClass().getName() + "\n");
+                fw.write(ex.getMessage() + "\n");
+            }
+            catch (IOException ex1)
+            {
+                System.out.println("Файла для логирования не существует");
+                System.out.println(ex1.getMessage());
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * <h2>Чтение из файла сертификата открытого ключа сервера</h2>
+     *
+     * @return Сертификат открытого ключа сервера или {@code null}, если произошла ошибка (см. файл .log).
+     */
+    public static Certificate getCertificate()
+    {
+
+        try (FileInputStream fis = new FileInputStream("src/main/resources/certificates/skp.cer"))
+        {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+
+            return cf.generateCertificate(fis);
+        }
+        catch (IOException|CertificateException ex)
+        {
+            try (FileWriter fw = new FileWriter("src/main/resources/logs/.log"))
+            {
+                fw.write(java.time.LocalDateTime.now().toString());
+                fw.write(CryptographicAlgorithms.class.getName() + "\n");
+                fw.write(new Exception().getStackTrace()[0].getMethodName() + "\n");
+                fw.write(ex.getClass().getName() + "\n");
+                fw.write(ex.getMessage() + "\n");
+            }
+            catch (IOException ex1)
+            {
+                System.out.println("Файла для логирования не существует");
+                System.out.println(ex1.getMessage());
+            }
+        }
+
+        return null;
     }
 }

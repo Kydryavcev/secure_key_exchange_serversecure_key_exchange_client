@@ -5,10 +5,12 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.UnknownHostException;
 import java.security.*;
+import java.security.cert.Certificate;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
 
@@ -21,7 +23,37 @@ public class Client
 
     private Key secretKey;
 
-    public Client(int port) throws ClientInitializationException
+    private Signature signature;
+
+    public void loadCertificate()
+    {
+        try
+        {
+            Certificate certificate = CryptographicAlgorithms.getCertificate();
+
+            signature = Signature.getInstance("MD5withRSA");
+
+            signature.initVerify(certificate);
+        }
+        catch (NoSuchAlgorithmException|InvalidKeyException ex)
+        {
+            try (FileWriter fw = new FileWriter("src/main/resources/logs/.log"))
+            {
+                fw.write(java.time.LocalDateTime.now().toString());
+                fw.write(CryptographicAlgorithms.class.getName() + "\n");
+                fw.write(new Exception().getStackTrace()[0].getMethodName() + "\n");
+                fw.write(ex.getClass().getName() + "\n");
+                fw.write(ex.getMessage() + "\n");
+            }
+            catch (IOException ex1)
+            {
+                System.out.println("Файла для логирования не существует");
+                System.out.println(ex1.getMessage());
+            }
+        }
+    }
+
+    public void connectToSocket(int port) throws ClientInitializationException
     {
         try
         {
@@ -73,7 +105,15 @@ public class Client
 
             secretKey = CryptographicAlgorithms.generateKey();
 
-            out.write(CryptographicAlgorithms.wrapKey(secretKey, publicKey));
+            if (secretKey == null)
+                throw new NullPointerException("В ходе генерации секретного ключа произошла ошибка.");
+
+            byte[] wrapSK = CryptographicAlgorithms.wrapKey(secretKey, publicKey);
+
+            if (wrapSK == null)
+                throw new NullPointerException("В ходе свёртки секретного ключа произошла ошибка.");
+
+            out.write(wrapSK);
         }
         catch (InvalidKeySpecException ex)
         {
@@ -88,17 +128,9 @@ public class Client
         {
             throw new ConnectionProtectionException("Провайдер не поддерживает реализация криптоалгоритма.");
         }
-        catch (NoSuchPaddingException ex)
+        catch (NullPointerException ex)
         {
-            throw new ConnectionProtectionException("Криптографический механизм загружен и не доступен.");
-        }
-        catch (InvalidKeyException ex)
-        {
-            throw new ConnectionProtectionException("Установленный ключ не поддерживается для данного алгоритма.");
-        }
-        catch (IllegalBlockSizeException ex)
-        {
-            throw new ConnectionProtectionException("Некорректная длина блока");
+            throw new ConnectionProtectionException(ex.getMessage());
         }
     }
 
@@ -109,53 +141,64 @@ public class Client
             if (secretKey == null)
                 throw new GetMessageException("Соединение не защищено.");
 
-            byte[] messageBytes = new byte[100], buffer = new byte[100];
+            byte[] cipherBytes = new byte[100], buffer = new byte[100];
 
-            int messageBytesLength = in.read(messageBytes);
+            int cipherBytesLength = in.read(cipherBytes);
 
             while (in.available() > 0)
             {
-                messageBytesLength += in.read(buffer);
+                cipherBytesLength += in.read(buffer);
 
-                byte[] temp = new byte[messageBytesLength];
+                byte[] temp = new byte[cipherBytesLength];
 
-                System.arraycopy(messageBytes, 0, temp, 0, messageBytes.length);
-                System.arraycopy(buffer, 0, temp, messageBytes.length,
-                        messageBytesLength - messageBytes.length);
+                System.arraycopy(cipherBytes, 0, temp, 0, cipherBytes.length);
+                System.arraycopy(buffer, 0, temp, cipherBytes.length,
+                        cipherBytesLength - cipherBytes.length);
 
-                messageBytes = temp;
+                cipherBytes = temp;
             }
+
+//            System.out.println(finalMessageBytesLength);
 
             String message = "";
 
-            if (messageBytesLength == 0)
+            if (cipherBytesLength <= 0)
                 return message;
 
+            byte[] finalMessageBytes = CryptographicAlgorithms.decrypt(cipherBytes,cipherBytesLength, secretKey);
 
-            try
-            {
-                message = new String(CryptographicAlgorithms.decrypt(messageBytes,messageBytesLength, secretKey));
-            }
-            catch (NoSuchAlgorithmException ex)
-            {
-                throw new GetMessageException("Произошли ошибки в работе алгоритма.");
-            }
-            catch (NoSuchPaddingException ex)
-            {
-                throw new GetMessageException("Преобразование содержит схему заполнения, которая недоступна.");
-            }
-            catch (InvalidKeyException ex)
-            {
-                throw new GetMessageException("Данный ключ не подходит для инициализации этого шифра.");
-            }
-            catch (IllegalBlockSizeException ex)
-            {
-                throw new GetMessageException("Длина сообщения не соответствует длине блока.");
-            }
-            catch (BadPaddingException ex)
-            {
-                throw new GetMessageException("Сообщение дополнено неверным образом.");
-            }
+            if (finalMessageBytes == null)
+                throw new NullPointerException("В ходе расшифрования сообщения произошла ошибка.");
+
+            int finalMessageBytesLength = finalMessageBytes.length;
+
+//            System.out.println("Length finalMessageBytes: " + finalMessageBytesLength);
+
+            byte[] lengthMessageBytes = new byte[4];
+
+            System.arraycopy(finalMessageBytes, 0,lengthMessageBytes,0, 4);
+
+            int lengthMessage = bsToInt(lengthMessageBytes);
+
+//            System.out.println("Длина в байтах: " + lengthMessage);
+
+            byte[] messageBytes = new byte[lengthMessage];
+
+            System.arraycopy(finalMessageBytes,4,messageBytes,0,lengthMessage);
+
+            signature.update(messageBytes);
+
+            byte[] sign = new byte[finalMessageBytesLength - lengthMessage - 4];
+
+//            System.out.println("Length sing: " + sign.length);
+
+            if (signature.verify(finalMessageBytes, lengthMessage + 4, finalMessageBytesLength - lengthMessage - 4))
+                System.out.println("Сообщение подтверждено ЭЦП");
+            else
+                System.out.println("Сообщение не подтверждено ЭЦП");
+
+            message = new String(messageBytes);
+
 
             return message;
         }
@@ -163,21 +206,76 @@ public class Client
         {
             throw new GetMessageException("Возникла ошибка ввода-вывода.");
         }
+        catch (java.security.SignatureException ex)
+        {
+            throw new GetMessageException("Класс формирования ЭЦП не инициализирован должным образом. Возможно сообщение " +
+                    "подписано не тем ключом.");
+        }
+        catch (NullPointerException ex)
+        {
+            throw new GetMessageException(ex.getMessage());
+        }
+    }
+
+
+    public int synchronizationIn() throws SynchronizationException
+    {
+        int result = - 1;
+
+        try
+        {
+            if (in.available() > 0)
+            {
+                result = in.read();
+            }
+        }
+        catch (IOException ex)
+        {
+            throw new SynchronizationException("Возникла ошибка ввода-вывода.");
+        }
+
+        return result;
+    }
+
+    public void synchronizationOut(int signal) throws SynchronizationException
+    {
+        try
+        {
+            out.write(signal);
+        }
+        catch (IOException ex)
+        {
+            throw new SynchronizationException("Возникла ошибка ввода-вывода.");
+        }
     }
 
     /**
-     * <h2>Проверка соединения</h2>
-     * @return
+     * <h2>Потерять соединение</h2>
      */
-    public boolean isConnect()
+    public void disconnect()
     {
-        return socket != null;
-    }
-
-    public boolean connected()
-    {
-        return true; // Необходимо постоянно обмениваться сигналами, чтобы знать состояние соединения. При этом
-                     // необходимо синхронизировать сообщения проверки соединения и приемки сообщений от сервера.
+        try
+        {
+            if (in != null) in.close();
+            if (out != null) out.close();
+            if (socket != null) socket.close();
+        }
+        catch (IOException ex)
+        {
+            try (FileWriter fw = new FileWriter("src/main/resources/logs/.log"))
+            {
+                fw.write(java.time.LocalDateTime.now().toString());
+                fw.write(CryptographicAlgorithms.class.getName() + "\n");
+                fw.write(new Exception().getStackTrace()[0].getMethodName() + "\n");
+                fw.write(ex.getClass().getName() + "\n");
+                fw.write(ex.getMessage() + "\n");
+            }
+            catch (IOException ex1)
+            {
+                System.out.println("Файла для логирования не существует");
+                System.out.println(ex1.getMessage());
+            }
+        }
     }
 
     public class ClientInitializationException extends Exception
@@ -202,5 +300,34 @@ public class Client
         {
             super(message);
         }
+    }
+
+    public class SynchronizationException extends Exception
+    {
+        public SynchronizationException(String message)
+        {
+            super(message);
+        }
+    }
+
+    /**
+     * <h2>Преобразование массива байтов в число типа данных int.</h2>
+     */
+    private int bsToInt(byte[] bytes)
+    {
+        int num = 0;
+
+        int shift = 0;
+
+        for (int i = 0; i < 4; i++)
+        {
+            byte b = bytes[i];
+
+            num |= b << shift;
+
+            shift += 4;
+        }
+
+        return num;
     }
 }

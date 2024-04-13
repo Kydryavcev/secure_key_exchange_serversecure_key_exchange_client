@@ -7,14 +7,30 @@ import javafx.fxml.FXML;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
-import javafx.stage.Stage;
+import javafx.scene.layout.VBox;
+import javafx.stage.WindowEvent;
 import model.Client;
+
+import java.util.Calendar;
+import java.util.GregorianCalendar;
 
 public class ClientController
 {
-    public static final int ERROR_PORT_NUMBER = -1;
+    /**
+     * ОЖИДАНИЕ
+     */
+    private static final int WAITING = 1;
 
-    private Client client;
+    private static final int SEND_MESSAGE = 2;
+    private static final int MESSAGE_DELIVERED = 3;
+    private static final int DISCONNECT = -1;
+
+    private int SIGNAL = WAITING;
+    private static final int ERROR_PORT_NUMBER = -1;
+
+    private boolean connected = false;
+
+    private Client client = new Client();
 
     @FXML
     private TextField portNumberTextField;
@@ -23,8 +39,26 @@ public class ClientController
     private Button connectionButton, disconnectButton;
 
     @FXML
-    private Label errorValuePortNumberLabel, connectionEstablishedLabel, connectionNotSecureLabel, disconnectLabel,
-            messageLabel;
+    private VBox messagesVBox;
+
+    @FXML
+    private Label errorValuePortNumberLabel, connectionEstablishedLabel, connectionNotSecureLabel, disconnectLabel;
+
+    private javafx.event.EventHandler<WindowEvent> closeEventHandler =
+            new javafx.event.EventHandler<WindowEvent>()
+            {
+                @Override
+                public void handle(WindowEvent event)
+                {
+                   if (client != null)
+                       client.disconnect();
+                }
+            };
+
+    public javafx.event.EventHandler<WindowEvent> getCloseEventHandler()
+    {
+        return closeEventHandler;
+    }
 
     @FXML
     public void onConnectionButton()
@@ -32,20 +66,23 @@ public class ClientController
         connectionButton.setDisable(true);
         portNumberTextField.setDisable(true);
 
+        disconnectLabel.setVisible(false);
         connectionNotSecureLabel.setVisible(false);
         connectionEstablishedLabel.setVisible(false);
 
         Thread connection    = new Thread(new ConnectionClient());
-        Thread searchMessage = new Thread(new SearchMessage());
-        Thread isConnected   = new Thread(new IsConnected());
 
         connection.setDaemon(true);
-        isConnected.setDaemon(true);
-        searchMessage.setDaemon(true);
 
         connection.start();
-        isConnected.start();
-        searchMessage.start();
+    }
+
+    @FXML
+    protected void onClickDisconnectButton()
+    {
+        client.disconnect();
+
+        connected = false;
     }
 
     /**
@@ -60,6 +97,8 @@ public class ClientController
     @FXML
     public void initialize()
     {
+        client.loadCertificate();
+
         portNumberTextField.textProperty().addListener(new ChangeListener<String>()
         {
             @Override
@@ -109,7 +148,7 @@ public class ClientController
      */
     private boolean canConnect()
     {
-        if (client != null && client.isConnect())
+        if (connected)
             return false;
 
         return getPortNumberTextFieldValue() != ERROR_PORT_NUMBER;
@@ -124,101 +163,141 @@ public class ClientController
             {
                 int portNumber = getPortNumberTextFieldValue();
 
-                client = new Client(portNumber);
+                client.connectToSocket(portNumber);
 
                 connectionEstablishedLabel.setVisible(true);
 
+                disconnectButton.setDisable(false);
+
                 client.connectionProtection();
-            }
-            catch (Client.ClientInitializationException ex)
-            {
 
+                connected = true;
+
+                Thread synchronization = new Thread(new Synchronization());
+
+                synchronization.setDaemon(true);
+
+                synchronization.start();
             }
-            catch (Client.ConnectionProtectionException ex)
+            catch (Client.ClientInitializationException | Client.ConnectionProtectionException ex)
             {
+                disconnectLabel.setVisible(true);
+
+                disconnectButton.setDisable(true);
+                portNumberTextField.setDisable(false);
+                connectionButton.setDisable(!canConnect());
 
             }
         }
     }
 
-    class IsConnected implements Runnable
+    class Synchronization implements Runnable
     {
         @Override
         public void run()
         {
-            while (true)
+            try
             {
-                try
-                {
-                    Thread.sleep(1000);
-                }
-                catch (InterruptedException ex)
-                {
 
-                }
-
-                if ( client != null && !client.isConnect())
+                exit:
+                while (true)
                 {
-                    Platform.runLater(new Runnable()
+                    Thread.sleep(500);
+
+                    int signal = DISCONNECT;
+
+                    if (connected)
+                        signal = client.synchronizationIn();
+
+                    switch (signal)
                     {
-                        @Override
-                        public void run()
+                        case WAITING ->
                         {
-                            disconnectLabel.setVisible(true);
-
-                            connectionEstablishedLabel.setVisible(false);
-                            connectionButton.setDisable(false);
-                            portNumberTextField.setDisable(false);
+//                            System.out.println("Ждём");
                         }
-                    });
+                        case SEND_MESSAGE ->
+                        {
+                            String message = client.getMessage();
+
+                            if (message.length() == 0)
+                                return;
+
+                            Platform.runLater(new Runnable()
+                            {
+                                @Override
+                                public void run()
+                                {
+                                    Calendar calendar = new GregorianCalendar();
+
+                                    String messageForLabel = String.format("%02d:%02d:%02d %s",
+                                            calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE),
+                                                                                calendar.get(Calendar.SECOND), message);
+
+                                    Label messageLabel = new Label(messageForLabel);
+
+                                    messagesVBox.getChildren().add(messageLabel);
+                                }
+                            });
+
+                            SIGNAL = MESSAGE_DELIVERED;
+
+                        }
+                        case DISCONNECT ->
+                        {
+                            disconnect();
+
+                            return;
+                        }
+                    }
+
+                    switch (SIGNAL)
+                    {
+                        case WAITING ->
+                        {
+                            client.synchronizationOut(WAITING);
+                        }
+                        case MESSAGE_DELIVERED ->
+                        {
+                            client.synchronizationOut(MESSAGE_DELIVERED);
+
+                            SIGNAL = WAITING;
+                        }
+                        case DISCONNECT ->
+                        {
+                            disconnect();
+
+                            return;
+                        }
+                    }
                 }
+            }
+            catch (Client.SynchronizationException ex)
+            {
+                System.out.println(ex.getMessage());
+
+                disconnect();
+            }
+            catch (Client.GetMessageException ex)
+            {
+                System.out.println(ex.getMessage());
+
+                disconnect();
+            }
+            catch (InterruptedException ex)
+            {
+                System.out.println(ex.getMessage());
             }
         }
-    }
 
-    class SearchMessage implements Runnable
-    {
-        @Override
-        public void run()
+        private void disconnect()
         {
-            while (true)
-            {
-                try
-                {
-                    Thread.sleep(1000);
-                }
-                catch (InterruptedException ex)
-                {
+            connected = false;
+            disconnectLabel.setVisible(true);
+            connectionEstablishedLabel.setVisible(false);
 
-                }
-
-                String message;
-
-                try
-                {
-                    message = client.getMessage();
-                }
-                catch (Client.GetMessageException ex)
-                {
-                    System.out.println(ex.getMessage());
-
-                    continue;
-                }
-
-                if (message.length() == 0)
-                    return;
-
-                Platform.runLater(new Runnable()
-                {
-                    @Override
-                    public void run()
-                    {
-                        messageLabel.setText(message);
-
-                        messageLabel.setVisible(true);
-                    }
-                });
-            }
+            disconnectButton.setDisable(true);
+            portNumberTextField.setDisable(false);
+            connectionButton.setDisable(!canConnect());
         }
     }
 }
